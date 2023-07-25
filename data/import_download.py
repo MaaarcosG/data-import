@@ -1,6 +1,8 @@
-import pymongo
 import os
 import requests
+# database
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 class DataDownloader:
     def __init__(self, api_key, base_id, table_name, url, db):
@@ -9,9 +11,12 @@ class DataDownloader:
         self.api_key = api_key
         self.url = url
 
-        # Configurar la conexión a MongoDB
-        self.client = pymongo.MongoClient(db)
-        self.db = self.client['db']
+        cred = credentials.Certificate("data/database/database-ia-e35ec-firebase-adminsdk-6xg36-3e7250a0eb.json")
+        firebase_admin.initialize_app(cred)
+
+        # Referencia a la coleccion de Firestore
+        self.db = firestore.client()
+        self.collection = self.db.collection("files")
 
     def is_pdf_file(self, file_url):
         response = requests.head(file_url)
@@ -22,13 +27,17 @@ class DataDownloader:
         response = requests.head(file_url)
         file_size = int(response.headers.get('content-length', 0))
         return file_size <= max_size_bytes
+    
+    def is_file_exist_firestore(self, file_url):
+        query = self.collection.where('url', '==', file_url).limit(1)
+        return len(list(query.get())) > 0
 
-    def save_attachment_to_mongodb(self, attachment):
+    def save_attachment_to_firestore(self, attachment):
         file_url = attachment.get('url', '')
         file_name = attachment.get('filename', '')
 
         # Verificar si el archivo adjunto ya ha sido procesado previamente
-        if not self.db['documents'].find_one({'url': file_url}):
+        if not self.is_file_exist_firestore(file_url):
             response = requests.get(file_url)
             if response.status_code == 200:
                 # Guardar el contenido del archivo en MongoDB
@@ -37,24 +46,29 @@ class DataDownloader:
                     'name': file_name,
                     'data': response.content
                 }
-                self.db['files'].insert_one(file_data)
-                print(f'Archivo guardado en MongoDB: {file_name}')
+                self.collection.add(file_data)
+                print(f'Archivo guardado en Firestore: {file_name}')
             else:
                 print(f'Error al guardar el archivo: {file_name}')
         else:
             print(f'Archivo previamente procesado, se omite: {file_name}')
 
     def download_files_from_airtable(self):
-        # Configurar la URL de la API de Airtable
-        api_url = '%s/%s/%s' % (self.url, self.base_id, self.table_name)
+        offset = None
 
-        # Encabezados de autenticación
-        headers = {
-            'Authorization': f'Bearer {self.api_key}'
-        }
+        while True:
+            # Configurar la URL de la API de Airtable con paginación
+            api_url = f'{self.url}/{self.base_id}/{self.table_name}'
 
-        # Realizar la solicitud GET para obtener los datos de la tabla
-        while api_url:
+            # Encabezados de autenticación
+            headers = {
+                'Authorization': f'Bearer {self.api_key}'
+            }
+
+            # Si hay una paginación activa, agregamos el parámetro 'offset' a la URL
+            if offset:
+                api_url += f'?offset={offset}'
+
             try:
                 response = requests.get(api_url, headers=headers)
 
@@ -63,7 +77,7 @@ class DataDownloader:
                     data = response.json()
                     records = data.get('records', [])
 
-                    # Descargar los archivos adjuntos PDF dentro del límite de tamaño y guardarlos en MongoDB
+                    # Descargar los archivos adjuntos PDF dentro del límite de tamaño y guardarlos en Firestore
                     for record in records:
                         fields = record.get('fields', {})
                         attachments = fields.get('CV', [])
@@ -74,13 +88,20 @@ class DataDownloader:
                                 file_name = attachment.get('filename', '')
                                 if self.is_pdf_file(file_url) and self.is_file_size_within_limit(file_url):
                                     try:
-                                        self.save_attachment_to_mongodb(attachment)
+                                        self.save_attachment_to_firestore(attachment)
                                     except Exception as e:
-                                        print(f'Error al guardar el archivo en MongoDB: {e}')
+                                        print(f'Error al guardar el archivo en Firestore: {e}')
                                 else:
                                     print(f'Archivo omitido: {file_name}, no es un PDF o excede el tamaño máximo permitido.')
                         else:
                             print(f'Registro sin archivos adjuntos: {record.get("id")}')
+
+                    # Obtener el valor del campo 'offset' para la siguiente página, si existe
+                    if 'offset' in data:
+                        offset = data['offset']
+                    else:
+                        # Si no hay más páginas, salimos del bucle
+                        break
                 else:
                     print(f'Error al obtener los datos de Airtable. Código de estado: {response.status_code}')
                     break
