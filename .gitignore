@@ -137,5 +137,6 @@ dmypy.json
 
 # vscode
 .vscode
+data/database/firebase-config.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
