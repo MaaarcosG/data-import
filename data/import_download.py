@@ -11,7 +11,7 @@ class DataDownloader:
         self.api_key = api_key
         self.url = url
 
-        cred = credentials.Certificate("data/database/database-ia-e35ec-firebase-adminsdk-6xg36-3e7250a0eb.json")
+        cred = credentials.Certificate("data/database/firebase-config.json")
         firebase_admin.initialize_app(cred)
 
         # Referencia a la coleccion de Firestore
